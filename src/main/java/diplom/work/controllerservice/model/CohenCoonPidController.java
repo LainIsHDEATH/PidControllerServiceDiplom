@@ -1,8 +1,10 @@
 package diplom.work.controllerservice.model;
 
-import diplom.work.controllerservice.controller.PIDController;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -12,126 +14,49 @@ import java.util.List;
  * 2) Применяет ступеньку (basePower + stepChange) и собирает реакцию.
  * 3) После стабилизации вычисляет параметры PID и переходит в замкнутый режим.
  */
-public class CohenCoonPidController {
-    private enum Stage { WAIT_BEFORE_STEP, COLLECT_AFTER_STEP, CONTROL }
+@Getter
+@Setter
+public class CohenCoonPidController implements PowerController {
+    private enum Stage{WAIT,STEP,COLLECT,CONTROL}
+    private Stage stage=Stage.WAIT;
+    private final double basePower, stepChange, stabilityThr; private final int stableWin;
+    private final List<Double> tBuf=new ArrayList<>(), yBuf=new ArrayList<>();
+    private double tStepStart;
+    private double kp,ki,kd,integral,prevErr; private final double setpoint;
+    private static final double MAX_POWER=2_000;
+    private static final int MIN_STEP_SEC = 3600;   // 30 мин
+    private static final double TARGET_RISE = 1.0; // °C
+    private static final double DT_DTHR=0.01;
 
-    private Stage stage = Stage.WAIT_BEFORE_STEP;
+    public CohenCoonPidController(double setpoint, double basePower, double stepChange, int stableWin, double stabilityThr){
+        this.setpoint=setpoint; this.basePower=basePower; this.stepChange=stepChange; this.stableWin=stableWin; this.stabilityThr=stabilityThr; }
 
-    private final double basePower;
-    private final double stepChange;
-    private final int stableWindow;
-    private final double stabilityThreshold;
+    private boolean stable(List<Double> data){
+        if(data.size()<stableWin) return false;
+        double max= Collections.max(data.subList(data.size()-stableWin,data.size()));
+        double min=Collections.min(data.subList(data.size()-stableWin,data.size()));
+        return max-min<=stabilityThr; }
 
-    private final List<Double> times = new ArrayList<>();
-    private final List<Double> temps = new ArrayList<>();
-
-    private double stepStartTime;
-
-    // PID state
-    private double Kp, Ki, Kd;
-    private double setpoint;
-    private double integral = 0;
-    private double prevError = 0;
-
-    /**
-     * @param setpoint целевая температура
-     * @param basePower базовая мощность перед ступенькой
-     * @param stepChange изменение мощности для исследования
-     * @param stableWindow число последних точек для проверки стабильности
-     * @param stabilityThreshold допустимое отклонение для признания стационарного состояния
-     */
-    public CohenCoonPidController(double setpoint,
-                                  double basePower,
-                                  double stepChange,
-                                  int stableWindow,
-                                  double stabilityThreshold) {
-        this.setpoint = setpoint;
-        this.basePower = basePower;
-        this.stepChange = stepChange;
-        this.stableWindow = stableWindow;
-        this.stabilityThreshold = stabilityThreshold;
-    }
-
-    public synchronized double computeOutput(double currentTemp, double dt, long timestamp) {
-        double t = timestamp / 1000.0; // приводим к секундам
-        switch (stage) {
-            case WAIT_BEFORE_STEP:
-                // Сбор данных до ступеньки
-                times.add(t);
-                temps.add(currentTemp);
-                if (isStable(temps, stabilityThreshold, stableWindow)) {
-                    // Переход к шагу
-                    stage = Stage.COLLECT_AFTER_STEP;
-                    stepStartTime = t;
-                    times.clear();
-                    temps.clear();
-                    // Первая точка после ступеньки
-                    times.add(0.0);
-                    temps.add(currentTemp);
-                    return basePower + stepChange;
-                }
-                return basePower;
-
-            case COLLECT_AFTER_STEP:
-                // Сбор данных после ступеньки
-                times.add(t - stepStartTime);
-                temps.add(currentTemp);
-                if (isStable(temps, stabilityThreshold, stableWindow) && times.size() >= stableWindow + 1) {
-                    // Вычисление PID коэффициентов
-                    CohenCoonAutotuner tuner = new CohenCoonAutotuner(stepChange);
-                    CohenCoonAutotuner.PIDParams p = tuner.tune(times, temps);
-                    this.Kp = p.Kp;
-                    this.Ki = p.Ki;
-                    this.Kd = p.Kd;
-                    // Сброс состояния PID
-                    this.integral = 0;
-                    this.prevError = setpoint - temps.get(temps.size() - 1);
-                    stage = Stage.CONTROL;
-                    // Вычисляем первый управляющий сигнал
-                    double err = setpoint - currentTemp;
-                    double output = Kp * err;
-                    // сохранение для derivative
-                    prevError = err;
-                    return clampOutput(output);
-                }
-                return basePower + stepChange;
-
-            case CONTROL:
-                // Стандартный PID-регулятор
-                double error = setpoint - currentTemp;
-                integral += error * dt;
-                double derivative = (error - prevError) / dt;
-                prevError = error;
-                double out = Kp * error + Ki * integral + Kd * derivative;
-                return clampOutput(out);
-
-            default:
-                throw new IllegalStateException("Unknown stage: " + stage);
+    @Override public synchronized double compute(double target,double cur,double dt,long ts){
+        double t=ts/1000.0;
+        switch(stage){
+            case WAIT-> { tBuf.add(t); yBuf.add(cur); if(stable(yBuf)){ stage=Stage.STEP; return basePower+stepChange; } return basePower; }
+            case STEP-> { tStepStart=t; tBuf.clear(); yBuf.clear(); tBuf.add(0.0); yBuf.add(cur); stage=Stage.COLLECT; return basePower+stepChange; }
+            case COLLECT-> {
+                double rel=t-tStepStart; tBuf.add(rel); yBuf.add(cur);
+                boolean plateau=false; if(tBuf.size()>1){ int n=tBuf.size(); double dTdt=(yBuf.get(n-1)-yBuf.get(n-2))/(tBuf.get(n-1)-tBuf.get(n-2)); plateau=Math.abs(dTdt)<DT_DTHR; }
+                boolean longEnough=rel>=MIN_STEP_SEC;
+                if(stable(yBuf)&&plateau&&longEnough){
+                    CohenCoonAutotuner.PIDParams p=new CohenCoonAutotuner(stepChange).tune(tBuf,yBuf);
+                    kp=p.kp(); ki=p.ki(); kd=p.kd(); integral=0; prevErr=target-cur; stage=Stage.CONTROL; return clamp(kp*prevErr); }
+                return basePower+stepChange; }
+            case CONTROL-> {
+                double err=target-cur; integral+=err*dt; double dTerm=kd*((err-prevErr)/dt); prevErr=err;
+                dTerm=Math.max(-0.2*MAX_POWER,Math.min(0.2*MAX_POWER,dTerm));
+                return clamp(kp*err+ki*integral+dTerm); }
         }
-    }
-
-    /**
-     * Проверяет, что последние stableWindow точек темп имеют изменение меньше threshold
-     */
-    private boolean isStable(List<Double> data, double threshold, int stableWindow) {
-        int n = data.size();
-        if (n < stableWindow) return false;
-        double max = Double.NEGATIVE_INFINITY;
-        double min = Double.POSITIVE_INFINITY;
-        for (int i = n - stableWindow; i < n; i++) {
-            double v = data.get(i);
-            if (v > max) max = v;
-            if (v < min) min = v;
-        }
-        return (max - min) <= threshold;
-    }
-
-    /**
-     * Ограничивает выход PID, если требуется (например, 0-100% или мощность в ваттах 0- max)
-     */
-    private double clampOutput(double out) {
-        // Здесь можно задать ограничения по мощности, например:
-        // return Math.max(0, Math.min(maxPower, out));
-        return out;
-    }
+        throw new IllegalStateException(); }
+    private double clamp(double v){ return Math.max(0,Math.min(MAX_POWER,v)); }
+    public boolean isTuned(){ return stage==Stage.CONTROL; }
+    public double getKp(){return kp;} public double getKi(){return ki;} public double getKd(){return kd;}
 }
