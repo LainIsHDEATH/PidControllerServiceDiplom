@@ -5,7 +5,6 @@ public record PidConfigDTO(
         Double kp,
         Double ki,
         Double kd,
-        String tunedMethod,
-        Boolean active
+        String tunedMethod
 ) {
 }
