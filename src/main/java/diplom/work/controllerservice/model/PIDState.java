@@ -16,13 +16,21 @@ public class PIDState {
         this.kd = kd;
     }
 
-    public double update(double target, double current, double dt, double maxPowerOutput) {
+    public double update(double target, double current, double dt) {
         double error = target - current;
-        integral += error * dt;
         double derivative = (error - previousError) / dt;
+
+        double integralCandidate = integral + error * dt;
+        double outputCandidate = kp * error + ki * integralCandidate + kd * derivative;
+
+        double output = Math.max(0.0, Math.min(100.0, outputCandidate));
+
+        // Anti-windup
+        if (output == outputCandidate) {
+            integral = integralCandidate;
+        }
+
         previousError = error;
-        double output = kp * error + ki * integral + kd * derivative;
-        return Math.max(0.0,
-                Math.min(maxPowerOutput, output));
+        return output;
     }
 }
