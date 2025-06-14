@@ -2,62 +2,43 @@ package diplom.work.controllerservice.service;
 
 import diplom.work.controllerservice.dto.PIDConfigRequest;
 import diplom.work.controllerservice.dto.PIDRequest;
+import diplom.work.controllerservice.dto.PidConfigDTO;
+import diplom.work.controllerservice.feign.StoragePidConfigClient;
 import diplom.work.controllerservice.model.PIDState;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
+@RequiredArgsConstructor
 public class PIDControllerService {
 
-    private final Map<String, PIDState> pidStates = new ConcurrentHashMap<>();
-    private final Map<String, PIDAutoTunerService> autoTunerServices = new ConcurrentHashMap<>();
+    private final Map<Long, PIDState> pidStates = new ConcurrentHashMap<>();
+    private final StoragePidConfigClient storagePidConfigClient;
+//    private final Map<Long, PIDAutoTunerService> autoTunerServices = new ConcurrentHashMap<>();
 
     public double calculateOutput(PIDRequest request) {
-        PIDState state = pidStates.get(request.roomName());
-        PIDAutoTunerService tuner = autoTunerServices.get(request.roomName());
-
-        if (tuner != null && !tuner.isTuningComplete()) {
-            // Автотюнинг в процессе
-            double kp = tuner.getCurrentKp();
-            double error = request.targetTemperature() - request.currentTemperature();
-            double outputPower = Math.max(0.0, kp * error);
-
-            tuner.record(outputPower, request.deltaTime()); // Или timestamp, если он есть отдельно
-
-            return outputPower;
+        PIDState pidState = pidStates.get(request.pidConfigId());
+        System.out.println(pidState);
+        if (pidState == null) {
+            PidConfigDTO pidConfigDTO = storagePidConfigClient.getConfig(request.pidConfigId()).getBody();
+            if (pidConfigDTO != null) {
+                pidState = new PIDState(
+                        pidConfigDTO.kp(),
+                        pidConfigDTO.ki(),
+                        pidConfigDTO.kd());
+                pidStates.put(request.pidConfigId(), pidState);
+            } else throw new RuntimeException("PID config not found");
         }
+        System.out.println(
+                "Kp: " + pidState.getKp() +
+                        " Ki: " + pidState.getKi() +
+                        " Kd: " + pidState.getKd() +
+                        " integral: " + pidState.getIntegral() +
+                        " previous error " + pidState.getPreviousError());
 
-        if (state == null) {
-            throw new IllegalStateException("PID config not set for room: " + request.roomName());
-        }
-
-        return state.update(request.targetTemperature(), request.currentTemperature(), request.deltaTime());
-    }
-
-    public void setPIDConfig(PIDConfigRequest config) {
-        pidStates.put(config.roomName(), new PIDState(config.kp(), config.ki(), config.kd()));
-    }
-
-    public void startAutoTuning(String roomName) {
-        PIDAutoTunerService tuner = new PIDAutoTunerService();
-        autoTunerServices.put(roomName, tuner);
-    }
-
-    public boolean isAutoTuningComplete(String roomName) {
-        PIDAutoTunerService tuner = autoTunerServices.get(roomName);
-        return tuner != null && tuner.isTuningComplete();
-    }
-
-    public void applyTunedPID(String roomName) {
-        PIDAutoTunerService tuner = autoTunerServices.get(roomName);
-        if (tuner == null || !tuner.isTuningComplete()) {
-            throw new IllegalStateException("Tuning is not complete for room: " + roomName);
-        }
-        PIDState tunedPID = tuner.getTunedPID();
-        pidStates.put(roomName, tunedPID);
-
-        autoTunerServices.remove(roomName); // Очистить после применения
+        return pidState.update(request.targetTemperature(), request.currentTemperature(), request.deltaTime(), 2000);
     }
 }

@@ -3,6 +3,7 @@ package diplom.work.controllerservice.controller;
 import diplom.work.controllerservice.dto.PIDConfigRequest;
 import diplom.work.controllerservice.dto.PIDRequest;
 import diplom.work.controllerservice.dto.PIDResponse;
+import diplom.work.controllerservice.model.CohenCoonPidController;
 import diplom.work.controllerservice.service.PIDControllerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -17,40 +18,38 @@ public class PIDController {
 
     @PostMapping("/compute")
     public PIDResponse compute(@RequestBody PIDRequest request) {
-        double output = 0;
+        System.out.println(request.toString());
+        double outputPower = 0;
         try {
-            output = pidService.calculateOutput(request);
+            outputPower = pidService.calculateOutput(request);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new PIDResponse(request.roomName(), output);
+        return new PIDResponse(outputPower);
     }
 
-    @PutMapping("/config")
-    public ResponseEntity<String> configurePID(@RequestBody PIDConfigRequest config) {
-        pidService.setPIDConfig(config);
-        return ResponseEntity.ok("PID config set for room: " + config.roomName());
+    // Активный контроллер (внедряется или переключается через другой эндпоинт)
+    private CohenCoonPidController activeController;
+
+    @PostMapping("/control")
+    public ResponseEntity<PIDResponse> handleControl(@RequestBody PIDRequest req) {
+        double currentTemp = req.currentTemperature();
+        double dt = req.deltaTime();
+        long time = req.;
+        // Вычисление управления через активный контроллер
+        double power = activeController.computeOutput(currentTemp, dt, time);
+        PIDResponse resp = new PIDResponse(power);
+        return ResponseEntity.ok(resp);
     }
 
-    @PostMapping("/start-tuning/{roomName}")
-    public ResponseEntity<String> startTuning(@PathVariable String roomName) {
-        pidService.startAutoTuning(roomName);
-        return ResponseEntity.ok("Auto-tuning started for room: " + roomName);
-    }
-
-    @GetMapping("/status/{roomName}")
-    public ResponseEntity<String> tuningStatus(@PathVariable String roomName) {
-        boolean complete = pidService.isAutoTuningComplete(roomName);
-        if (complete) {
-            return ResponseEntity.ok("Tuning complete for room: " + roomName);
+    // Эндпоинт для выбора стратегии автотюнинга
+    @PostMapping("/autotune")
+    public ResponseEntity<String> selectAutotuneStrategy(@RequestParam String strategy) {
+        if ("cohen-coon".equalsIgnoreCase(strategy)) {
+            activeController = new CohenCoonPidController(defaultSetpoint, defaultStepPower);
         } else {
-            return ResponseEntity.ok("Tuning in progress for room: " + roomName);
+            return ResponseEntity.badRequest().body("Unknown strategy");
         }
-    }
-
-    @PostMapping("/apply-tuning/{roomName}")
-    public ResponseEntity<String> applyTuning(@PathVariable String roomName) {
-        pidService.applyTunedPID(roomName);
-        return ResponseEntity.ok("Tuned PID applied for room: " + roomName);
+        return ResponseEntity.ok("Strategy set to " + strategy);
     }
 }
