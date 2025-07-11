@@ -1,0 +1,35 @@
+# Omit local env and caches
+.env
+*.log
+*.tmp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore local Python virtual envs
+venv/
+.env/
+
+# Ignore logs and data
+logs/
+*.json
+
+# Bytecode and test outputs
+*.class
+
+# Exclude git directory
+.git
+
+# Dockerfiles and .dockerignore itself not necessary in container
+Dockerfile*
+.dockerignore
+
+# If using Maven/Gradle
+target/
+build/
+
+# IDE/editor specific
+.vscode/
+.idea/
+*.iml
